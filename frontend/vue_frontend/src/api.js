@@ -37,6 +37,10 @@ export default {
   login(username, password) {
     return api.post('/login', { username, password });
   },
+  // 读取高亮词典（服务与错误码）
+  getHighlightDict() {
+    return api.get('/highlight-dict');
+  },
   
   // 发送聊天消息
   chat(sessionId, userInput) {

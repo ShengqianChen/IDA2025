@@ -4,9 +4,11 @@
       <SessionList
         :sessions="sessions"
         :current-session="currentSession"
+        :theme-label="themeLabel"
         @select="handleSelectSession"
         @delete="handleDeleteSession"
         @create="handleCreateSession"
+        @toggleTheme="toggleTheme"
       />
       
       <div class="user-info">
@@ -57,7 +59,7 @@
 </template>
 
 <script setup>
-import { onMounted, computed } from 'vue';
+import { onMounted, computed, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { useStore } from '../store';
 import api from '../api';
@@ -88,8 +90,23 @@ const loadHistory = async (sessionId) => {
   }
 };
 
-// 挂载时加载当前会话历史
+// 主题切换（明/暗）
+const themeLabel = ref('深色主题');
+const applyTheme = (theme) => {
+  document.documentElement.setAttribute('data-theme', theme);
+  localStorage.setItem('theme', theme);
+  themeLabel.value = theme === 'dark' ? '浅色主题' : '深色主题';
+};
+const toggleTheme = () => {
+  const current = document.documentElement.getAttribute('data-theme') || 'light';
+  applyTheme(current === 'dark' ? 'light' : 'dark');
+};
+
+// 挂载时初始化主题并加载历史
 onMounted(() => {
+  const saved = localStorage.getItem('theme');
+  const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+  applyTheme(saved || (prefersDark ? 'dark' : 'light'));
   loadHistory(currentSession.value);
 });
 
@@ -156,17 +173,25 @@ const handleLogout = () => {
 </script>
 
 <style scoped>
+/* 页面：聊天主界面
+   目标：
+   - 左侧会话/操作区 + 右侧聊天区的两栏布局
+   - 在中小屏设备上切换为上下布局，保证可用性
+   - 优化滚动条与消息容器的溢出处理 */
 .chat-container {
   display: flex;
   height: 100vh;
 }
 
+/* 侧边栏：会话列表 + 操作区域 */
 .sidebar {
   width: 300px;
+  min-width: 250px;
   display: flex;
   flex-direction: column;
   background-color: var(--card-bg);
   border-right: 1px solid var(--border-color);
+  transition: transform 0.3s ease;
 }
 
 .user-info {
@@ -174,27 +199,40 @@ const handleLogout = () => {
   border-top: 1px solid var(--border-color);
 }
 
+/* 操作按钮区域：在小屏时纵向改横向排列 */
 .user-actions {
   display: flex;
+  flex-direction: column;
   gap: 0.5rem;
 }
 
+.user-actions button {
+  width: 100%;
+  padding: 0.5rem;
+  font-size: 0.875rem;
+}
+
+/* 聊天区域：主内容区，包含标题栏与消息列表 */
 .chat-area {
   flex: 1;
   display: flex;
   flex-direction: column;
   background-color: var(--bg-color);
+  min-width: 0; /* 防止flex子元素溢出 */
 }
 
+/* 标题栏：固定高度，防止被消息区挤压 */
 .chat-header {
   padding: 1rem;
   background-color: var(--card-bg);
   border-bottom: 1px solid var(--border-color);
+  flex-shrink: 0;
 }
 
 .chat-header h1 {
   color: var(--primary-color);
   margin-bottom: 0.25rem;
+  font-size: 1.5rem;
 }
 
 .chat-header h2 {
@@ -203,12 +241,14 @@ const handleLogout = () => {
   font-weight: 500;
 }
 
+/* 消息列表：滚动容器，启用平滑滚动 */
 .messages-container {
   flex: 1;
   padding: 1rem;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
+  scroll-behavior: smooth;
 }
 
 .empty-state {
@@ -225,5 +265,100 @@ const handleLogout = () => {
   gap: 0.5rem;
   margin: 1rem auto;
   color: var(--text-secondary);
+}
+
+/* 响应式设计：在中小屏将布局改为上下结构，并调整间距与尺寸 */
+@media (max-width: 768px) {
+  .chat-container {
+    flex-direction: column;
+  }
+  
+  .sidebar {
+    width: 100%;
+    height: auto;
+    max-height: 200px;
+    order: 2;
+  }
+  
+  .chat-area {
+    order: 1;
+    height: calc(100vh - 200px);
+  }
+  
+  .user-actions {
+    flex-direction: row;
+  }
+  
+  .user-actions button {
+    flex: 1;
+  }
+  
+  .chat-header h1 {
+    font-size: 1.25rem;
+  }
+  
+  .messages-container {
+    padding: 0.5rem;
+  }
+}
+
+@media (max-width: 480px) {
+  .sidebar {
+    max-height: 150px;
+  }
+  
+  .chat-area {
+    height: calc(100vh - 150px);
+  }
+  
+  .chat-header {
+    padding: 0.75rem;
+  }
+  
+  .chat-header h1 {
+    font-size: 1.125rem;
+  }
+  
+  .chat-header h2 {
+    font-size: 0.875rem;
+  }
+  
+  .user-info {
+    padding: 0.75rem;
+  }
+  
+  .user-actions button {
+    padding: 0.375rem;
+    font-size: 0.75rem;
+  }
+}
+
+/* 滚动条样式：细滚动条，提高视觉品质 */
+.messages-container::-webkit-scrollbar {
+  width: 6px;
+}
+
+.messages-container::-webkit-scrollbar-track {
+  background: var(--bg-color);
+}
+
+.messages-container::-webkit-scrollbar-thumb {
+  background: var(--border-color);
+  border-radius: 3px;
+}
+
+.messages-container::-webkit-scrollbar-thumb:hover {
+  background: var(--text-secondary);
+}
+
+/* 消息容器优化 */
+.messages-container {
+  scroll-padding-bottom: 1rem;
+}
+
+/* 确保消息不会超出容器 */
+.message {
+  word-wrap: break-word;
+  overflow-wrap: break-word;
 }
 </style>

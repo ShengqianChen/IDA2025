@@ -2,9 +2,12 @@
   <div class="session-list">
     <div class="session-list-header">
       <h2>会话</h2>
-      <button class="primary" @click="showNewSessionDialog = true">
-        <plus-icon class="icon" />
-      </button>
+      <div class="header-actions">
+        <button class="theme-toggle" @click="$emit('toggleTheme')">{{ themeLabel }}</button>
+        <button class="primary" @click="showNewSessionDialog = true" title="创建新会话">
+          <plus-icon class="icon" />
+        </button>
+      </div>
     </div>
     
     <div class="session-items">
@@ -57,10 +60,14 @@ const props = defineProps({
   currentSession: {
     type: String,
     required: true
+  },
+  themeLabel: {
+    type: String,
+    default: '深色主题'
   }
 });
 
-const emits = defineEmits(['select', 'delete', 'create']);
+const emits = defineEmits(['select', 'delete', 'create', 'toggleTheme']);
 
 const showNewSessionDialog = ref(false);
 const newSessionName = ref('');
@@ -105,9 +112,37 @@ const createSession = () => {
   font-weight: 600;
 }
 
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+/* 统一头部按钮尺寸与样式（主题切换 与 新建会话） */
+.session-list-header .header-actions button {
+  height: 32px;
+  padding: 0 8px;
+  font-size: 0.875rem;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.theme-toggle {
+  border: 1px solid var(--border-color);
+  background-color: var(--card-bg);
+  color: var(--text-primary);
+}
+
+.theme-toggle:hover {
+  background-color: var(--bg-color);
+}
+
+/* 缩小图标以匹配统一高度 */
 .icon {
-  width: 1.25rem;
-  height: 1.25rem;
+  width: 1rem;
+  height: 1rem;
 }
 
 .session-items {

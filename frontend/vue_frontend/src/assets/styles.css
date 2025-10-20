@@ -1,18 +1,27 @@
 :root {
-  --primary-color: #4f46e5;
-  --primary-light: #6366f1;
-  --primary-dark: #4338ca;
-  --secondary-color: #10b981;
-  --bg-color: #f8fafc;
-  --card-bg: #ffffff;
-  --text-primary: #1e293b;
-  --text-secondary: #64748b;
-  --border-color: #e2e8f0;
-  --user-message: #e0e7ff;
-  --bot-message: #f1f5f9;
-  --danger-color: #ef4444;
-  --shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
-  --radius: 8px;
+  /* 主题主色：柔和的靛蓝系，更现代、更通用 */
+  --primary-color: #5661ff;      /* 主色 */
+  --primary-light: #7c86ff;      /* 悬停/浅背景 */
+  --primary-dark: #3f4aff;       /* 悬停/按压 */
+  --secondary-color: #0ea5e9;    /* 次要强调（用于图标或强调边）*/
+
+  /* 基础中性色与表面颜色（浅色主题）*/
+  --bg-color: #f6f7fb;           /* 页面背景：淡灰蓝 */
+  --card-bg: #ffffff;            /* 卡片/容器背景 */
+  --text-primary: #111827;       /* 主文本：深灰 */
+  --text-secondary: #6b7280;     /* 次文本：中灰 */
+  --border-color: #e5e7eb;       /* 分割线：浅灰 */
+
+  /* 气泡背景：提高可读性、降低饱和度 */
+  --user-message: #eef2ff;       /* 靛蓝极浅（用户）*/
+  --bot-message: #f3f4f6;        /* 中性极浅（AI）*/
+
+  /* 反馈色 */
+  --danger-color: #ef4444;       /* 错误 */
+
+  /* 形态与阴影 */
+  --shadow: 0 6px 20px rgba(17, 24, 39, 0.06);
+  --radius: 10px;
 }
 
 * {
@@ -26,6 +35,27 @@ body {
   background-color: var(--bg-color);
   color: var(--text-primary);
   min-height: 100vh;
+}
+
+/* 暗色主题变量覆盖：通过在 html 上设置 data-theme="dark" 启用 */
+[data-theme="dark"] {
+  /* 深色主题：低对比背景 + 高可读文本 */
+  --bg-color: #0b1220;          /* 页面背景：深蓝黑 */
+  --card-bg: #0f172a;           /* 卡片背景：深蓝灰 */
+  --text-primary: #e5e7eb;      /* 主文本：极浅灰 */
+  --text-secondary: #a1a7b3;    /* 次文本：浅灰蓝 */
+  --border-color: #233047;      /* 分割线：深灰蓝 */
+
+  /* 深色下的气泡背景：降低亮度、保证对比 */
+  --user-message: #1b2440;      /* 靛蓝深色（用户）*/
+  --bot-message: #121a2b;       /* 中性深色（AI）*/
+
+  /* 主色在暗色模式下略微提亮 */
+  --primary-color: #6b74ff;
+  --primary-light: #8891ff;
+  --primary-dark: #5059ff;
+
+  --danger-color: #f87171;
 }
 
 .container {
@@ -43,22 +73,24 @@ button {
   transition: all 0.2s ease;
 }
 
+/* 统一按钮风格：更现代的主按钮与描边按钮 */
 button.primary {
   background-color: var(--primary-color);
-  color: white;
+  color: #ffffff;
+  box-shadow: 0 4px 14px rgba(86, 97, 255, 0.18);
 }
-
 button.primary:hover {
   background-color: var(--primary-dark);
+  box-shadow: 0 6px 18px rgba(86, 97, 255, 0.24);
 }
 
 button.secondary {
-  background-color: var(--border-color);
+  background-color: transparent;
   color: var(--text-primary);
+  border: 1px solid var(--border-color);
 }
-
 button.secondary:hover {
-  background-color: #cbd5e1;
+  background-color: rgba(0, 0, 0, 0.03);
 }
 
 button.danger {
@@ -88,14 +120,16 @@ input:focus, textarea:focus {
   border-radius: var(--radius);
   box-shadow: var(--shadow);
   padding: 1.5rem;
+  border: 1px solid var(--border-color);
 }
 
 .error-message {
   color: var(--danger-color);
-  padding: 0.5rem;
+  padding: 0.5rem 0.75rem;
   margin-bottom: 1rem;
-  border-radius: var(--radius);
-  background-color: rgba(239, 68, 68, 0.1);
+  border-radius: 8px;
+  background-color: rgba(239, 68, 68, 0.08);
+  border: 1px solid rgba(239, 68, 68, 0.18);
 }
 
 .loading {
@@ -110,4 +144,100 @@ input:focus, textarea:focus {
 
 @keyframes spin {
   to { transform: rotate(360deg); }
+}
+
+/* 代码高亮样式（highlight.js 深色主题定制）：
+   - 统一深色背景，提升可读性
+   - 区分关键词/字符串/注释等，便于快速扫读 */
+.hljs {
+  display: block;
+  overflow-x: auto;
+  padding: 0.5em;
+  background: #1e293b;
+  color: #e2e8f0;
+}
+
+.hljs-comment,
+.hljs-quote {
+  color: #64748b;
+  font-style: italic;
+}
+
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-subst {
+  color: #f472b6;
+  font-weight: bold;
+}
+
+.hljs-number,
+.hljs-literal,
+.hljs-variable,
+.hljs-template-variable,
+.hljs-tag .hljs-attr {
+  color: #fb7185;
+}
+
+.hljs-string,
+.hljs-doctag {
+  color: #34d399;
+}
+
+.hljs-title,
+.hljs-section,
+.hljs-selector-id {
+  color: #60a5fa;
+  font-weight: bold;
+}
+
+.hljs-subst {
+  font-weight: normal;
+}
+
+.hljs-type,
+.hljs-class .hljs-title {
+  color: #a78bfa;
+  font-weight: bold;
+}
+
+.hljs-tag,
+.hljs-name,
+.hljs-attribute {
+  color: #fbbf24;
+  font-weight: normal;
+}
+
+.hljs-regexp,
+.hljs-link {
+  color: #f59e0b;
+}
+
+.hljs-symbol,
+.hljs-bullet {
+  color: #8b5cf6;
+}
+
+.hljs-built_in,
+.hljs-builtin-name {
+  color: #06b6d4;
+}
+
+.hljs-meta {
+  color: #6b7280;
+}
+
+.hljs-deletion {
+  background: #dc2626;
+}
+
+.hljs-addition {
+  background: #16a34a;
+}
+
+.hljs-emphasis {
+  font-style: italic;
+}
+
+.hljs-strong {
+  font-weight: bold;
 }

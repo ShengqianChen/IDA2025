@@ -24,16 +24,6 @@ import { defineProps, computed } from 'vue';
 import { marked } from 'marked';
 import hljs from 'highlight.js';
 
-// 转义 HTML，避免对用户消息直接渲染潜在的恶意标签
-const escapeHtml = (raw) => {
-  return raw
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;');
-};
-
 const props = defineProps({
   isUser: {
     type: Boolean,
@@ -72,23 +62,31 @@ marked.setOptions({
 //   1) 用正则给错误级别/服务名/错误码加语义标签（用于配色高亮）
 //   2) 使用 marked 渲染 Markdown + 代码高亮
 const formattedContent = computed(() => {
-  // 预清洗：去除原文中的 HTML 标签，避免未闭合或嵌套破坏布局
-  const raw = (props.content || '').replace(/<[^>]*>/g, '');
-  // 统一先做安全处理：用户消息先转义，AI 消息保留原文以支持 Markdown
-  let processedContent = props.isUser ? escapeHtml(raw) : raw;
-
-  // 仅处理错误级别（大小写不敏感）
-  processedContent = processedContent
-    .replace(/\b(ERROR|FATAL)\b/gi, '<span class="error-level error-fatal">$1</span>')
-    .replace(/\b(WARN|WARNING)\b/gi, '<span class="error-level error-warn">$1</span>')
-    .replace(/\b(INFO|INFORMATION)\b/gi, '<span class="error-level error-info">$1</span>')
-    .replace(/\b(DEBUG)\b/gi, '<span class="error-level error-debug">$1</span>');
-
-  // 仅对 AI 消息进行 Markdown 渲染（支持代码高亮等）
+  let processedContent = props.content;
+  
+  // 如果不是用户消息，进行 Markdown 渲染和日志元素高亮
   if (!props.isUser) {
+    // 处理错误级别高亮
+    processedContent = processedContent
+      .replace(/\b(ERROR|FATAL)\b/g, '<span class="error-level error-fatal">$1</span>')
+      .replace(/\b(WARN|WARNING)\b/g, '<span class="error-level error-warn">$1</span>')
+      .replace(/\b(INFO|INFORMATION)\b/g, '<span class="error-level error-info">$1</span>')
+      .replace(/\b(DEBUG)\b/g, '<span class="error-level error-debug">$1</span>');
+    
+    // 处理服务名称高亮（可按实际服务清单扩展）
+    processedContent = processedContent
+      .replace(/\b(AuthService|OrderService|PaymentService|LogService|UserService|CartService|EmailService|GatewayService|SearchService|StockService|NotiService)\b/g, 
+               '<span class="service-name">$1</span>');
+    
+    // 处理错误码高亮（可按实际错误码清单扩展）
+    processedContent = processedContent
+      .replace(/\b(INVALID_TOKEN|TIMEOUT|DB_CONNECTION_LOST|CORRUPTED_LOG|MFA_FAIL|PAY_FEE_CHANGE|STOCK_EXPIRE|ORDER_SPLIT|SMS_SIGN_FAIL|LOGIN_IP_CHANGE|CART_ITEM_DUPLICATE|LIST_UNSUBSCRIBE|BACKEND_HEALTH_FAIL|LOG_LOST_TIME|QUERY_SUGGEST|PASSWORD_EXPIRE|BALANCE_REFUND_FAIL|PAY_CHANNEL_SWITCH|STOCK_MOVE|ORDER_RECEIPT_FAIL|INBOX_FULL|BIND_PHONE_FAIL|CART_DISCOUNT_EXPIRE|DKIM_FAIL|CACHE_WARM|LOG_ENCODING_ERR|FIELD_MISSING|SSO_LOGIN|PAY_RISK)\b/g, 
+               '<span class="error-code">$1</span>');
+    
+    // 渲染Markdown
     processedContent = marked(processedContent);
   }
-
+  
   return processedContent;
 });
 
@@ -251,7 +249,7 @@ const formatTime = (date) => {
 }
 
 /* 错误级别颜色标识 */
-.message-text :deep(.error-level) {
+.error-level {
   padding: 0.125rem 0.375rem;
   border-radius: 4px;
   font-weight: 600;
@@ -260,53 +258,50 @@ const formatTime = (date) => {
   letter-spacing: 0.025em;
 }
 
-.message-text :deep(.error-fatal) {
+.error-fatal {
   background-color: #fef2f2;
   color: #dc2626;
   border: 1px solid #fecaca;
 }
 
-.message-text :deep(.error-warn) {
+.error-warn {
   background-color: #fffbeb;
   color: #d97706;
   border: 1px solid #fed7aa;
 }
 
-.message-text :deep(.error-info) {
+.error-info {
   background-color: #eff6ff;
   color: #2563eb;
   border: 1px solid #bfdbfe;
 }
 
-.message-text :deep(.error-debug) {
+.error-debug {
   background-color: #f0fdf4;
   color: #16a34a;
   border: 1px solid #bbf7d0;
 }
 
 /* 服务名称样式 */
-.message-text :deep(.service-name) {
+.service-name {
   background-color: #f1f5f9;
   color: var(--primary-color);
   padding: 0.125rem 0.375rem;
   border-radius: 4px;
   font-weight: 500;
-  font-size: 0.75rem; /* 与 .error-code 保持一致大小 */
-  line-height: 1; /* 统一徽章高度 */
-  font-family: 'Courier New', monospace; /* 与 .error-code 统一字体 */
+  font-size: 0.875rem;
   border: 1px solid #cbd5e1;
 }
 
 /* 错误码样式 */
-.message-text :deep(.error-code) {
+.error-code {
   background-color: #fef3c7;
   color: #92400e;
   padding: 0.125rem 0.375rem;
   border-radius: 4px;
   font-weight: 500;
-  font-size: 0.75rem; /* 与 .service-name 保持一致大小 */
+  font-size: 0.75rem;
   font-family: 'Courier New', monospace;
-  line-height: 1; /* 统一徽章高度 */
   border: 1px solid #fde68a;
 }
 
