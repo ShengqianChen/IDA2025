@@ -8,7 +8,9 @@ os.environ["CHROMA_TELEMETRY_ENABLED"] = "false"
 import json
 import logging
 import pandas as pd
+import re
 from typing import Any, Dict, List
+from enum import Enum
 
 # langchain
 from langchain.prompts import ChatPromptTemplate, HumanMessagePromptTemplate, SystemMessagePromptTemplate
@@ -39,6 +41,16 @@ from domain_knowledge import (
 # 日志
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+class ConversationType(Enum):
+    """对话类型枚举"""
+    FAULT_ANALYSIS = "fault_analysis"        # 故障分析（Markdown格式）
+    GENERAL_QUESTION = "general_question"    # 一般问题（Markdown格式）
+    FOLLOW_UP_QUESTION = "follow_up"         # 跟进问题（Markdown格式）
+    EXPLANATION_REQUEST = "explanation"       # 解释请求（Markdown格式）
+    PREVENTION_QUESTION = "prevention"       # 预防措施（Markdown格式）
+    DEPENDENCY_QUESTION = "dependency"       # 依赖关系（Markdown格式）
 
 
 class TopKLogSystem:
@@ -77,6 +89,23 @@ class TopKLogSystem:
         # 构建 log 库 index
         log_vector_store = ChromaVectorStore(chroma_collection=log_collection)
         log_storage_context = StorageContext.from_defaults(vector_store=log_vector_store)
+        
+        # 检查是否已经存在索引
+        try:
+            # 尝试从现有存储加载索引
+            if log_collection.count() > 0:
+                logger.info(f"发现现有索引，包含 {log_collection.count()} 条记录")
+                self.log_index = VectorStoreIndex.from_vector_store(
+                    log_vector_store,
+                    storage_context=log_storage_context,
+                    show_progress=True,
+                )
+                logger.info("成功加载现有日志库索引")
+                return
+        except Exception as e:
+            logger.warning(f"加载现有索引失败: {e}，将重新构建")
+        
+        # 如果不存在索引或加载失败，重新构建
         if log_documents := self._load_documents(self.log_path):
             self.log_index = VectorStoreIndex.from_documents(
                 log_documents,
@@ -149,7 +178,7 @@ class TopKLogSystem:
         try:
             retriever = self.log_index.as_retriever(similarity_top_k=top_k)
             results = retriever.retrieve(query)
-            
+
             formatted_results = []
             for result in results:
                 formatted_results.append({
@@ -269,10 +298,116 @@ class TopKLogSystem:
         # 返回前top_k个结果
         return unique_results[:top_k]
 
-            # LLM 生成响应
+    def detect_conversation_type(self, query: str, context: str = "") -> ConversationType:
+        """
+        识别对话类型
+        
+        Args:
+            query: 用户当前查询
+            context: 对话历史上下文
+            
+        Returns:
+            ConversationType: 识别出的对话类型
+        """
+        query_lower = query.lower()
+        context_lower = context.lower()
+        
+        # 1. 故障分析类问题（优先级最高，包含错误码的查询）
+        fault_keywords = [
+            "错误", "故障", "异常", "失败", "error", "fatal", "exception", 
+            "报错", "出错", "问题", "bug", "issue", "crash", "down"
+        ]
+        
+        # 检查是否包含错误码模式（如：Alatest97, ERROR, FATAL等）
+        error_code_patterns = [
+            r'[A-Za-z]+\d+',  # 如 Alatest97
+            r'\b(ERROR|FATAL|WARN|INFO|DEBUG)\b',  # 日志级别
+            r'\b[A-Z_]+\b'  # 大写错误码
+        ]
+        
+        has_error_code = any(re.search(pattern, query) for pattern in error_code_patterns)
+        
+        if has_error_code or any(keyword in query_lower for keyword in fault_keywords):
+            # 如果是第一轮对话或上下文很短，认为是故障分析
+            if len(context) < 100 or not context.strip():
+                return ConversationType.FAULT_ANALYSIS
+            else:
+                # 有历史对话，认为是跟进问题
+                return ConversationType.FOLLOW_UP_QUESTION
+        
+        # 2. 预防措施类问题（优先级第二）
+        prevention_keywords = [
+            "预防", "避免", "防止", "如何避免", "怎么预防", "预防措施",
+            "避免", "防范", "预防性", "proactive", "prevention", "avoid"
+        ]
+        
+        if any(keyword in query_lower for keyword in prevention_keywords):
+            return ConversationType.PREVENTION_QUESTION
+        
+        # 3. 解释类问题（优先级第三）
+        explanation_keywords = [
+            "是什么", "为什么", "什么意思", "解释", "说明", "这个", "这个错误"
+        ]
+        
+        # 特殊处理：如果包含"是什么"、"为什么"等，优先判断为解释请求
+        if any(keyword in query_lower for keyword in explanation_keywords):
+            return ConversationType.EXPLANATION_REQUEST
+        
+        # 4. 依赖关系类问题（优先级第四）
+        dependency_keywords = [
+            "依赖", "关系", "调用", "服务", "依赖关系", "调用链", "依赖链",
+            "关联", "连接", "dependencies", "relationship", "call", "service"
+        ]
+        
+        # 特殊处理：避免"数据库连接"被误判为依赖关系
+        if any(keyword in query_lower for keyword in dependency_keywords):
+            # 排除故障相关词汇
+            if not any(keyword in query_lower for keyword in ["失败", "错误", "异常", "故障"]):
+                return ConversationType.DEPENDENCY_QUESTION
+        
+        # 5. 基于上下文的判断
+        if context:
+            # 如果上下文包含故障分析相关内容，可能是跟进问题
+            if any(keyword in context_lower for keyword in fault_keywords):
+                return ConversationType.FOLLOW_UP_QUESTION
+            
+            # 如果上下文包含预防相关内容，可能是预防问题
+            if any(keyword in context_lower for keyword in prevention_keywords):
+                return ConversationType.PREVENTION_QUESTION
+        
+        # 6. 特殊处理：包含"如何"或"怎么"但不是预防措施
+        if any(keyword in query_lower for keyword in ["如何", "怎么"]):
+            # 检查是否包含预防相关词汇
+            if not any(keyword in query_lower for keyword in ["预防", "避免", "防止"]):
+                return ConversationType.EXPLANATION_REQUEST
+        
+        # 7. 默认情况
+        return ConversationType.GENERAL_QUESTION
 
     def generate_response(self, query: str, context: Dict) -> str:
-        prompt = self._build_prompt(query, context)  # 构建提示词
+        """
+        生成响应，支持对话类型识别
+        
+        Args:
+            query: 用户查询
+            context: 上下文信息（包含对话历史）
+            
+        Returns:
+            str: LLM响应
+        """
+        # 识别对话类型
+        conversation_type = self.detect_conversation_type(query, context.get('context', ''))
+        
+        # 检索相关日志
+        try:
+            logs = self.retrieve_logs(query, top_k=5)
+            context['logs'] = logs
+        except Exception as e:
+            logger.error(f"日志检索失败: {e}")
+            context['logs'] = []
+        
+        # 根据对话类型构建不同的Prompt
+        prompt = self._build_adaptive_prompt(query, context, conversation_type)
 
         try:
             response = self.llm.invoke(prompt)  # 调用LLM
@@ -281,58 +416,85 @@ class TopKLogSystem:
             logger.error(f"LLM调用失败: {e}")
             return f"生成响应时出错: {str(e)}"
 
-            # 构建 prompt
+    def _build_adaptive_prompt(self, query: str, context: Dict, conversation_type: ConversationType) -> List[Dict]:
+        """
+        根据对话类型构建不同的Prompt
+        
+        Args:
+            query: 用户查询
+            context: 上下文信息
+            conversation_type: 对话类型
+            
+        Returns:
+            List[Dict]: Prompt消息列表
+        """
+        if conversation_type == ConversationType.FAULT_ANALYSIS:
+            return self._build_fault_analysis_prompt(query, context)
+        elif conversation_type == ConversationType.FOLLOW_UP_QUESTION:
+            return self._build_follow_up_prompt(query, context)
+        elif conversation_type == ConversationType.PREVENTION_QUESTION:
+            return self._build_prevention_prompt(query, context)
+        elif conversation_type == ConversationType.DEPENDENCY_QUESTION:
+            return self._build_dependency_prompt(query, context)
+        elif conversation_type == ConversationType.EXPLANATION_REQUEST:
+            return self._build_explanation_prompt(query, context)
+        else:
+            return self._build_general_prompt(query, context)
 
-    def _build_prompt(self, query: str, context: Dict) -> List[Dict]:
+    def _build_fault_analysis_prompt(self, query: str, context: Dict) -> List[Dict]:
+        """构建故障分析Prompt（返回Markdown格式）"""
         # 构建领域知识上下文
         domain_context = self._build_domain_context(context)
         
-        # 系统消息 - 定义专业角色和分析框架
+        # 构建日志上下文
+        log_context = self._build_structured_context(context)
+        
         system_message = SystemMessagePromptTemplate.from_template(f"""
-你是一位资深的电商系统故障诊断专家，具有丰富的日志分析和故障排查经验。你的任务是基于提供的日志信息，进行专业的故障分析。
+你是一位资深的电商系统故障诊断专家，具有15年以上的日志分析和故障排查经验。你的任务是基于提供的日志信息，进行专业、准确的故障分析。
 
 ## 领域知识背景
 {domain_context}
 
-## 分析框架
+## 专业分析框架
 请按照以下三个步骤进行结构化分析：
 
-### 第一步：故障现象识别
-- 识别日志中的错误级别（FATAL/ERROR/WARN/INFO）
-- 提取关键错误码和服务名称，结合领域知识理解其含义
-- 分析故障发生的时间模式和频率
-- 评估故障的严重程度和影响范围
+### 第一步：故障现象识别 🔍
+- **错误级别识别**: 准确识别日志中的错误级别（FATAL/ERROR/WARN/INFO/DEBUG）
+- **关键信息提取**: 提取错误码、服务名称、时间戳、用户ID等关键信息
+- **影响范围评估**: 分析故障影响的服务、用户群体和业务功能
+- **严重程度判断**: 基于业务影响和技术影响评估严重程度
 
-### 第二步：根因分析
-- 基于错误码和日志内容分析可能的根本原因
-- 考虑服务间的依赖关系和调用链
-- 识别触发故障的条件和环境因素
-- 结合常见故障模式提供置信度评估（高/中/低）
+### 第二步：根因分析 🧠
+- **直接原因分析**: 基于错误码和日志内容分析直接触发原因
+- **根本原因挖掘**: 深入分析导致故障的系统性、架构性问题
+- **依赖关系考虑**: 分析服务间依赖关系、调用链和数据流
+- **环境因素识别**: 考虑网络、硬件、配置、数据等环境因素
+- **置信度评估**: 基于证据充分性提供置信度（HIGH/MEDIUM/LOW）
 
-### 第三步：解决方案建议
-- 提供立即修复措施（紧急处理）
-- 建议长期优化方案（根本解决）
-- 给出预防措施和监控建议
-- 按优先级排序解决方案
+### 第三步：解决方案建议 🛠️
+- **紧急修复措施**: 提供立即可执行的修复方案，按优先级排序
+- **长期优化方案**: 建议系统架构、代码、配置等方面的根本性改进
+- **预防措施**: 提供避免类似故障再次发生的预防性措施
+- **监控建议**: 建议监控指标、告警规则和运维流程
 
 ## 输出格式要求
-请严格按照以下JSON格式输出分析结果，确保结构完整：
+请使用Markdown格式输出分析结果，确保结构清晰、层次分明：
 
-JSON格式要求：
-- fault_summary: 包含severity("HIGH"/"MEDIUM"/"LOW")、category("AUTHENTICATION"/"PAYMENT"/"DATABASE"/"INVENTORY"/"SYSTEM_RESOURCE"/"NETWORK")、description(字符串)、affected_services(字符串数组)、error_codes(字符串数组)
-- root_cause_analysis: 包含primary_cause(字符串)、contributing_factors(字符串数组)、confidence_level("HIGH"/"MEDIUM"/"LOW")、reasoning(字符串)
-- solutions: 包含immediate_actions(对象数组)、long_term_fixes(对象数组)、prevention_measures(对象数组)
-- monitoring_recommendations: 字符串数组
+### 📋 内容要求
+- **直接回答**: 直接、明确地回答用户的问题
+- **技术细节**: 提供相关的技术细节和背景信息
+- **实用建议**: 给出具体、可操作的建议
+- **专业深度**: 展现专业的技术深度和行业经验
 
-每个解决方案对象必须包含action(字符串)和priority("HIGH"/"MEDIUM"/"LOW")字段。
+### 📝 格式要求
+- 使用Markdown格式组织内容
+- 使用标题、列表、代码块等增强可读性
+- 使用emoji图标突出重点信息
+- 保持结构清晰，层次分明
 
-重要：直接输出JSON内容，不要包含任何markdown代码块标记、解释文字或其他格式。
+**重要**: 不要使用JSON格式，直接输出Markdown内容。
         """)
 
-        # 构建结构化的日志上下文
-        log_context = self._build_structured_context(context)
-
-        # 用户消息 - 明确分析任务
         user_message = HumanMessagePromptTemplate.from_template("""
 ## 相关日志信息
 {log_context}
@@ -340,16 +502,9 @@ JSON格式要求：
 ## 分析任务
 用户问题：{query}
 
-请基于以上日志信息，按照分析框架进行专业的故障诊断分析。
-
-输出要求：
-1. 直接输出JSON格式的分析结果
-2. 不要包含任何markdown代码块标记（如```json）
-3. 不要包含任何解释文字或额外内容
-4. 确保JSON格式完全正确，可以被直接解析
+请基于以上日志信息，按照分析框架进行专业的故障诊断分析，使用Markdown格式输出结果。
         """)
 
-        # 创建提示词
         prompt = ChatPromptTemplate.from_messages([
             system_message,
             user_message
@@ -360,15 +515,28 @@ JSON格式要求：
             query=query
         ).to_messages()
 
-    def _build_structured_context(self, context: List[Dict]) -> str:
+    def _build_structured_context(self, context) -> str:
         """
         构建智能化的日志上下文，提高信息利用效率
         """
-        if not context:
-            return "未找到相关日志信息。"
+        # 处理不同类型的context
+        if isinstance(context, str):
+            # 如果是字符串，直接返回
+            return f"## 相关日志信息\n{context}"
+        
+        if not context or not isinstance(context, (list, dict)):
+            return "## 相关日志信息\n未找到相关日志信息。"
+        
+        # 如果是字典，尝试获取logs
+        if isinstance(context, dict):
+            logs = context.get('logs', [])
+            if not logs:
+                return "## 相关日志信息\n暂无相关日志信息。"
+        else:
+            logs = context
         
         # 智能过滤和排序
-        filtered_context = self._intelligent_context_filter(context)
+        filtered_context = self._intelligent_context_filter(logs)
         
         log_context = "## 相关日志信息\n\n"
         
@@ -478,19 +646,35 @@ JSON格式要求：
         
         return formatted_entry
 
-    def _build_domain_context(self, context: List[Dict]) -> str:
+    def _build_domain_context(self, context) -> str:
         """
         构建领域知识上下文，为AI提供专业的故障诊断知识
         """
-        if not context:
-            return "未找到相关日志信息。"
+        # 处理不同类型的context
+        if isinstance(context, str):
+            # 如果是字符串，直接返回基础领域知识
+            return "## 领域知识\n基于系统故障诊断的专业知识。"
+        
+        if not context or not isinstance(context, (list, dict)):
+            return "## 领域知识\n暂无相关日志信息。"
+        
+        # 如果是字典，尝试获取logs
+        if isinstance(context, dict):
+            logs = context.get('logs', [])
+            if not logs:
+                return "## 领域知识\n基于系统故障诊断的专业知识。"
+        else:
+            logs = context
         
         # 提取所有错误码和服务
         error_codes = set()
         services = set()
         
-        for log in context:
-            content = log.get('content', '')
+        for log in logs:
+            if isinstance(log, dict):
+                content = log.get('content', '')
+            else:
+                content = str(log)
             error_codes.update(self._extract_error_codes(content))
             services.update(self._extract_services(content))
         
@@ -585,6 +769,315 @@ JSON格式要求：
             "response": response,
             "retrieval_stats": len(log_results)
         }
+
+    def _build_follow_up_prompt(self, query: str, context: Dict) -> List[Dict]:
+        """构建跟进问题Prompt（返回Markdown格式）"""
+        # 构建领域知识上下文
+        domain_context = self._build_domain_context(context)
+        
+        # 构建日志上下文
+        log_context = self._build_structured_context(context.get('logs', []))
+        
+        system_message = SystemMessagePromptTemplate.from_template(f"""
+你是一位资深的系统故障诊断专家，具有15年以上的故障排查和系统运维经验。用户正在跟进之前的故障分析，请基于之前的分析结果和当前问题，提供详细、专业的回答。
+
+## 领域知识背景
+{domain_context}
+
+## 回答要求
+请用Markdown格式回答用户的问题，确保：
+- 直接回答用户的具体问题
+- 提供技术细节和实用建议
+- 保持专业深度和行业经验
+- 不要重复之前的分析内容
+- 使用清晰的Markdown格式
+
+**重要**: 直接输出Markdown内容，不要重复之前的分析内容。
+        """)
+
+        user_message = HumanMessagePromptTemplate.from_template("""
+## 相关日志信息
+{log_context}
+
+## 用户问题
+{query}
+
+请基于以上信息，详细回答用户的问题。注意：这是一个跟进问题，请直接回答用户的具体问题，不要重复之前的分析内容。
+        """)
+
+        prompt = ChatPromptTemplate.from_messages([
+            system_message,
+            user_message
+        ])
+
+        return prompt.format_prompt(
+            log_context=log_context,
+            query=query
+        ).to_messages()
+
+    def _build_prevention_prompt(self, query: str, context: Dict) -> List[Dict]:
+        """构建预防措施Prompt（返回Markdown格式）"""
+        # 构建领域知识上下文
+        domain_context = self._build_domain_context(context)
+        
+        # 构建日志上下文
+        log_context = self._build_structured_context(context.get('logs', []))
+        
+        system_message = SystemMessagePromptTemplate.from_template(f"""
+你是一位资深的系统运维专家，具有15年以上的系统架构设计和运维经验。用户询问如何预防系统故障，请提供详细、系统性的预防措施建议。
+
+## 领域知识背景
+{domain_context}
+
+## 回答要求
+请用Markdown格式回答，确保内容：
+
+### 🛡️ 预防措施分类
+- **监控预防**: 实时监控、告警机制、性能指标
+- **配置预防**: 系统配置、环境配置、安全配置
+- **代码预防**: 代码质量、异常处理、防御性编程
+- **流程预防**: 发布流程、测试流程、回滚机制
+- **架构预防**: 系统架构、容错设计、降级策略
+
+### 📋 内容要求
+- **具体实施**: 提供具体、可操作的实施步骤
+- **最佳实践**: 分享行业最佳实践和成功案例
+- **工具推荐**: 推荐相关的工具和技术栈
+- **优先级排序**: 按重要性和紧急程度排序
+- **成本效益**: 考虑实施成本和预期效果
+
+### 📝 格式要求
+- 使用Markdown格式组织内容
+- 使用表格、列表、代码块等增强可读性
+- 使用emoji图标突出重点信息
+- 保持结构清晰，层次分明
+
+### 🎯 回答策略
+- 基于用户的具体问题提供针对性建议
+- 结合系统特点和业务需求
+- 提供分阶段的实施计划
+- 包含风险评估和应对措施
+
+**重要**: 不要使用JSON格式，直接输出Markdown内容。
+        """)
+
+        user_message = HumanMessagePromptTemplate.from_template("""
+## 相关日志信息
+{log_context}
+
+## 用户问题
+{query}
+
+请基于以上信息，提供详细的预防措施建议。
+        """)
+
+        prompt = ChatPromptTemplate.from_messages([
+            system_message,
+            user_message
+        ])
+
+        return prompt.format_prompt(
+            log_context=log_context,
+            query=query
+        ).to_messages()
+
+    def _build_dependency_prompt(self, query: str, context: Dict) -> List[Dict]:
+        """构建依赖关系Prompt（返回Markdown格式）"""
+        # 构建领域知识上下文
+        domain_context = self._build_domain_context(context)
+        
+        # 构建日志上下文
+        log_context = self._build_structured_context(context.get('logs', []))
+        
+        system_message = SystemMessagePromptTemplate.from_template(f"""
+你是一位资深的系统架构专家，具有15年以上的微服务架构设计和分布式系统经验。用户询问服务依赖关系，请提供详细、专业的依赖关系分析。
+
+## 领域知识背景
+{domain_context}
+
+## 回答要求
+请用Markdown格式回答，确保内容：
+
+### 🔗 依赖关系分析
+- **服务依赖图**: 清晰展示服务间的依赖关系
+- **调用链分析**: 详细分析请求调用链路和数据流
+- **依赖类型**: 区分同步依赖、异步依赖、数据依赖等
+- **依赖强度**: 评估依赖的紧耦合程度和重要性
+- **循环依赖**: 识别和解决潜在的循环依赖问题
+
+### 📊 架构分析
+- **系统边界**: 明确各服务的职责边界
+- **接口设计**: 分析服务间接口的设计合理性
+- **数据一致性**: 分析分布式数据一致性策略
+- **故障传播**: 分析故障在依赖链中的传播路径
+- **性能瓶颈**: 识别依赖链中的性能瓶颈点
+
+### 🛠️ 优化建议
+- **解耦策略**: 提供减少依赖耦合的具体方案
+- **容错设计**: 建议容错和降级策略
+- **监控方案**: 提供依赖关系的监控和告警方案
+- **重构建议**: 基于依赖分析提供架构重构建议
+
+### 📝 格式要求
+- 使用Markdown格式组织内容
+- 使用表格、列表、代码块等增强可读性
+- 使用emoji图标突出重点信息
+- 保持结构清晰，层次分明
+
+**重要**: 不要使用JSON格式，直接输出Markdown内容。
+        """)
+
+        user_message = HumanMessagePromptTemplate.from_template("""
+## 相关日志信息
+{log_context}
+
+## 用户问题
+{query}
+
+请基于以上信息，分析服务依赖关系。
+        """)
+
+        prompt = ChatPromptTemplate.from_messages([
+            system_message,
+            user_message
+        ])
+
+        return prompt.format_prompt(
+            log_context=log_context,
+            query=query
+        ).to_messages()
+
+    def _build_explanation_prompt(self, query: str, context: Dict) -> List[Dict]:
+        """构建解释请求Prompt（返回Markdown格式）"""
+        # 构建领域知识上下文
+        domain_context = self._build_domain_context(context)
+        
+        # 构建日志上下文
+        log_context = self._build_structured_context(context.get('logs', []))
+        
+        system_message = SystemMessagePromptTemplate.from_template(f"""
+你是一位资深的系统专家，具有15年以上的技术架构和系统设计经验。用户请求解释某个概念或现象，请提供详细、易懂、专业的解释。
+
+## 领域知识背景
+{domain_context}
+
+## 回答要求
+请用Markdown格式回答，确保内容：
+
+### 📚 解释内容
+- **概念定义**: 清晰、准确的概念定义
+- **工作原理**: 详细的工作原理和机制说明
+- **实际应用**: 在系统中的实际应用场景
+- **相关示例**: 提供具体的代码示例或配置示例
+- **注意事项**: 使用时需要注意的问题和限制
+
+### 🎯 解释策略
+- **层次递进**: 从基础概念到高级应用
+- **图文并茂**: 使用图表、代码块等增强理解
+- **对比分析**: 与其他相关概念进行对比
+- **最佳实践**: 分享相关的最佳实践
+- **常见问题**: 解答相关的常见问题
+
+### 📝 格式要求
+- 使用Markdown格式组织内容
+- 使用标题、列表、代码块等增强可读性
+- 使用emoji图标突出重点信息
+- 保持结构清晰，层次分明
+- 使用表格对比不同方案
+
+### 🔍 深度要求
+- 提供技术细节和实现原理
+- 包含相关的技术标准和规范
+- 分享行业经验和教训
+- 提供进一步学习的方向
+
+**重要**: 不要使用JSON格式，直接输出Markdown内容。
+        """)
+
+        user_message = HumanMessagePromptTemplate.from_template("""
+## 相关日志信息
+{log_context}
+
+## 用户问题
+{query}
+
+请基于以上信息，详细解释用户的问题。
+        """)
+
+        prompt = ChatPromptTemplate.from_messages([
+            system_message,
+            user_message
+        ])
+
+        return prompt.format_prompt(
+            log_context=log_context,
+            query=query
+        ).to_messages()
+
+    def _build_general_prompt(self, query: str, context: Dict) -> List[Dict]:
+        """构建一般问题Prompt（返回Markdown格式）"""
+        # 构建领域知识上下文
+        domain_context = self._build_domain_context(context)
+        
+        # 构建日志上下文
+        log_context = self._build_structured_context(context.get('logs', []))
+        
+        system_message = SystemMessagePromptTemplate.from_template(f"""
+你是一位资深的系统专家，具有15年以上的技术经验和丰富的行业知识。用户提出了一个一般性问题，请提供友好、详细、专业的回答。
+
+## 领域知识背景
+{domain_context}
+
+## 回答要求
+请用Markdown格式回答，确保内容：
+
+### 🤝 回答风格
+- **友好亲切**: 使用友好、耐心的语调
+- **专业准确**: 提供准确、专业的技术信息
+- **详细全面**: 给出详细、全面的回答
+- **易于理解**: 使用通俗易懂的语言
+
+### 📋 内容要求
+- **直接回答**: 直接、明确地回答用户的问题
+- **背景信息**: 提供相关的背景信息和上下文
+- **实用建议**: 给出实用的建议和指导
+- **相关资源**: 提供相关的学习资源和参考资料
+- **扩展知识**: 适当扩展相关的知识点
+
+### 📝 格式要求
+- 使用Markdown格式组织内容
+- 使用标题、列表、代码块等增强可读性
+- 使用emoji图标增加亲和力
+- 保持结构清晰，层次分明
+
+### 🎯 回答策略
+- 如果问题涉及技术概念，提供清晰的定义和解释
+- 如果问题涉及操作步骤，提供详细的步骤说明
+- 如果问题涉及最佳实践，分享行业经验和建议
+- 如果问题涉及工具选择，提供对比分析和推荐
+
+**重要**: 不要使用JSON格式，直接输出Markdown内容。
+        """)
+
+        user_message = HumanMessagePromptTemplate.from_template("""
+## 相关日志信息
+{log_context}
+
+## 用户问题
+{query}
+
+请基于以上信息，回答用户的问题。
+        """)
+
+        prompt = ChatPromptTemplate.from_messages([
+            system_message,
+            user_message
+        ])
+
+        return prompt.format_prompt(
+            log_context=log_context,
+            query=query
+        ).to_messages()
 
     # 示例使用
 

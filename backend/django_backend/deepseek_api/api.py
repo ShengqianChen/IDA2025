@@ -95,19 +95,64 @@ def chat(request, data: ChatIn):
     prompt = pure_context + f"用户：{user_input}\n回复："
     logger.info(f"传递给大模型的prompt：\n{prompt}")  # 调试日志
     
-    # 5. 调用大模型（带完整上下文）
+    # 5. 智能响应处理（带完整上下文）
     # 获取缓存时传入session_id和user
     cached_reply = get_cached_reply(prompt, session_id, user)
     if cached_reply:
         reply = cached_reply
     else:
-        reply = deepseek_r1_api_call(prompt)
+        # 智能调用大模型，传入上下文和对话类型
+        raw_reply = deepseek_r1_api_call(
+            prompt=user_input,  # 只传入当前用户输入
+            session_context=session.context,  # 传入历史上下文
+            conversation_type=session.conversation_type or "fault_analysis"  # 传入对话类型
+        )
+        
+        # 响应质量评估和优化
+        from deepseek_api.services import assess_response_quality, optimize_response
+        
+        # 评估响应质量
+        quality_metrics = assess_response_quality(raw_reply, session.conversation_type or "fault_analysis")
+        logger.info(f"响应质量指标: {quality_metrics}")
+        
+        # 优化响应
+        reply = optimize_response(raw_reply, session.conversation_type or "fault_analysis")
+        
+        # 如果质量不达标，记录警告
+        if quality_metrics['completeness_score'] < 0.5:
+            logger.warning(f"响应完整性得分较低: {quality_metrics['completeness_score']}")
+        if quality_metrics['relevance_score'] < 0.01:
+            logger.warning(f"响应相关性得分较低: {quality_metrics['relevance_score']}")
         # 设置缓存时传入session_id和user
         set_cached_reply(prompt, reply, session_id, user)
     
-    # 6. 保存上下文到会话（更新历史记录）
-    session.context += f"用户：{user_input}\n回复：{reply}\n"
-    session.save()  # 持久化到数据库
+    # 6. 智能上下文更新（带压缩）
+    # 使用带压缩的上下文更新方法
+    session.update_context_with_compression(user_input, reply)
+    
+    # 7. 智能对话类型识别和更新
+    try:
+        from topklogsystem import TopKLogSystem, ConversationType
+        
+        # 创建临时系统实例用于对话类型识别
+        temp_system = TopKLogSystem(
+            log_path="./data/log",
+            llm="deepseek-r1:7b",
+            embedding_model="bge-large:latest"
+        )
+        
+        # 识别对话类型
+        detected_type = temp_system.detect_conversation_type(user_input, session.context)
+        
+        # 更新会话的对话类型
+        if session.conversation_type != detected_type.value:
+            session.conversation_type = detected_type.value
+            session.save()
+            logger.info(f"对话类型更新: {session.conversation_type} -> {detected_type.value}")
+        
+    except Exception as e:
+        logger.warning(f"对话类型识别失败: {e}")
+        # 如果识别失败，保持现有类型
     
     # session.update_context(user_input, reply)
 

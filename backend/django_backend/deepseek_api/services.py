@@ -118,9 +118,10 @@ def json_to_markdown(json_response: str) -> str:
         # 其他错误，返回原始响应
         return json_response
 
-def deepseek_r1_api_call(prompt: str) -> str:
-    """模拟 DeepSeek-R1 API 调用函数"""
-    from topklogsystem import TopKLogSystem
+def deepseek_r1_api_call(prompt: str, session_context: str = "", conversation_type: str = "fault_analysis") -> str:
+    """智能 DeepSeek-R1 API 调用函数"""
+    from topklogsystem import TopKLogSystem, ConversationType
+    
     system = TopKLogSystem(
         log_path="./data/log",
         llm="deepseek-r1:7b",
@@ -128,20 +129,206 @@ def deepseek_r1_api_call(prompt: str) -> str:
     )
 
     query = prompt
-    result = system.query(query)
+    
+    # 构建上下文信息
+    context = {
+        'context': session_context,
+        'logs': []  # 这里可以添加检索到的日志信息
+    }
+    
+    # 生成响应
+    result = system.generate_response(query, context)
     time.sleep(0.5)
 
-    # 获取原始JSON响应
-    json_response = result["response"]
-    print(f"🔍 原始JSON响应长度: {len(json_response)} 字符")
-    print(f"🔍 原始响应前200字符: {json_response[:200]}...")
+    # 获取原始响应
+    raw_response = result
+    print(f"🔍 原始响应长度: {len(raw_response)} 字符")
+    print(f"🔍 对话类型: {conversation_type}")
+    print(f"🔍 原始响应前200字符: {raw_response[:200]}...")
     
-    # 转换为Markdown格式
-    markdown_response = json_to_markdown(json_response)
-    print(f"✅ 转换后Markdown长度: {len(markdown_response)} 字符")
-    print(f"✅ 转换后前200字符: {markdown_response[:200]}...")
+    # 根据对话类型进行智能处理
+    processed_response = process_response_by_type(raw_response, conversation_type)
+    print(f"✅ 处理后响应长度: {len(processed_response)} 字符")
     
-    return markdown_response
+    return processed_response
+
+def process_response_by_type(response: str, conversation_type: str) -> str:
+    """
+    根据对话类型智能处理响应
+    
+    Args:
+        response: 原始响应
+        conversation_type: 对话类型
+        
+    Returns:
+        str: 处理后的响应
+    """
+    try:
+        # 现在所有对话类型都返回Markdown格式，直接返回
+        return response
+    except Exception as e:
+        print(f"⚠️ 响应处理出错: {e}")
+        # 出错时返回原始响应
+        return response
+
+def assess_response_quality(response: str, conversation_type: str) -> dict:
+    """
+    评估响应质量
+    
+    Args:
+        response: 响应内容
+        conversation_type: 对话类型
+        
+    Returns:
+        dict: 质量指标
+    """
+    quality_metrics = {
+        'length': len(response),
+        'has_structure': False,
+        'has_keywords': False,
+        'format_correct': False,
+        'completeness_score': 0,
+        'relevance_score': 0
+    }
+    
+    if not response or len(response.strip()) == 0:
+        return quality_metrics
+    
+    # 检查Markdown结构
+    quality_metrics['has_structure'] = any(marker in response for marker in ['#', '##', '###', '-', '*'])
+    quality_metrics['format_correct'] = quality_metrics['has_structure']
+    
+    # 检查关键词（更宽松的关键词匹配）
+    keywords = [
+        "错误", "故障", "异常", "失败", "服务", "数据库", "网络", "连接", "超时", "内存", "CPU",
+        "error", "fatal", "exception", "service", "database", "network", "timeout", "memory",
+        "问题", "解决", "分析", "原因", "建议", "监控", "预防", "修复", "优化"
+    ]
+    keyword_count = sum(response.lower().count(keyword) for keyword in keywords)
+    quality_metrics['has_keywords'] = keyword_count > 0
+    
+    # 计算完整性得分（基于Markdown结构）
+    structure_elements = ["#", "##", "###", "-", "*"]
+    present_elements = sum(1 for element in structure_elements if element in response)
+    quality_metrics['completeness_score'] = min(present_elements / 2, 1.0)  # 至少需要2个结构元素
+    
+    # 计算相关性得分（基于关键词密度，但更宽松）
+    if len(response) > 0:
+        keyword_density = keyword_count / len(response)
+        # 将密度转换为0-1之间的分数，密度0.01以上就认为相关性较高
+        quality_metrics['relevance_score'] = min(keyword_density * 100, 1.0)
+    else:
+        quality_metrics['relevance_score'] = 0
+    
+    return quality_metrics
+
+def optimize_response(response: str, conversation_type: str) -> str:
+    """
+    优化响应内容
+    
+    Args:
+        response: 原始响应
+        conversation_type: 对话类型
+        
+    Returns:
+        str: 优化后的响应
+    """
+    try:
+        if conversation_type == "fault_analysis":
+            # 故障分析类型：确保JSON格式正确
+            return optimize_json_response(response)
+        else:
+            # 其他类型：优化Markdown格式
+            return optimize_markdown_response(response)
+    except Exception as e:
+        print(f"⚠️ 响应优化出错: {e}")
+        return response
+
+def optimize_json_response(response: str) -> str:
+    """优化JSON响应"""
+    import json
+    import re
+    
+    try:
+        # 清理响应
+        cleaned_response = re.sub(r'<[^>]+>', '', response)  # 移除HTML标签
+        cleaned_response = re.sub(r'```json\s*', '', cleaned_response)  # 移除markdown代码块标记
+        cleaned_response = re.sub(r'```\s*$', '', cleaned_response)
+        
+        # 尝试解析JSON
+        json_data = json.loads(cleaned_response)
+        
+        # 确保所有必需字段存在
+        required_fields = {
+            "fault_summary": {
+                "severity": "MEDIUM",
+                "category": "SYSTEM_RESOURCE",
+                "description": "系统故障",
+                "affected_services": [],
+                "error_codes": [],
+                "impact_scope": "影响范围未知"
+            },
+            "root_cause_analysis": {
+                "primary_cause": "原因未知",
+                "contributing_factors": [],
+                "confidence_level": "MEDIUM",
+                "reasoning": "分析推理",
+                "evidence": []
+            },
+            "solutions": {
+                "immediate_actions": [],
+                "long_term_fixes": [],
+                "prevention_measures": []
+            },
+            "monitoring_recommendations": []
+        }
+        
+        # 填充缺失字段
+        for field, default_value in required_fields.items():
+            if field not in json_data:
+                json_data[field] = default_value
+            elif isinstance(default_value, dict):
+                for sub_field, sub_default in default_value.items():
+                    if sub_field not in json_data[field]:
+                        json_data[field][sub_field] = sub_default
+        
+        return json.dumps(json_data, ensure_ascii=False, indent=2)
+        
+    except json.JSONDecodeError:
+        # 如果不是有效JSON，返回原始响应
+        return response
+
+def optimize_markdown_response(response: str) -> str:
+    """优化Markdown响应"""
+    import re
+    
+    # 清理HTML标签
+    cleaned_response = re.sub(r'<[^>]+>', '', response)
+    
+    # 确保标题格式正确
+    lines = cleaned_response.split('\n')
+    optimized_lines = []
+    
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+            
+        # 确保标题有正确的格式
+        if line.startswith('#'):
+            # 标题行
+            optimized_lines.append(line)
+        elif line.startswith('-') or line.startswith('*'):
+            # 列表项
+            optimized_lines.append(line)
+        elif line.startswith('```'):
+            # 代码块
+            optimized_lines.append(line)
+        else:
+            # 普通文本
+            optimized_lines.append(line)
+    
+    return '\n'.join(optimized_lines)
 
 def create_api_key(user: str) -> str:
     """创建 API Key 并保存到数据库"""
